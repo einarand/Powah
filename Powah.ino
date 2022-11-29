@@ -274,10 +274,10 @@ void meaurement() {
   \"W_L3\": %s,\n\
   \"W_SYS\": %s,\n\
   \"Hz\": %s,\n\
-  \"kWh_TOT\": %s,\n\
   \"kWh_L1\": %s,\n\
   \"kWh_L2\": %s,\n\
-  \"kWh_L3\": %s\n\
+  \"kWh_L3\": %s,\n\
+  \"kWh_TOT\": %s\n\
 }",
                POWAH_VERSION,
                uptime,
