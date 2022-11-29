@@ -9,11 +9,10 @@
 #define MBUS_TXD_PIN 23
 #define SLAVE_ID 1
 #define APP_NAME "Powah!"
-#define POWAH_VERSION "1.06"
+#define POWAH_VERSION "1.07"
 
 ModbusRTU mb;
 WebServer server(80);
-Modbus::ResultCode lastResultCode = Modbus::ResultCode::EX_CANCEL;
 AsyncTimer t;
 
 const char* mainPage =
@@ -120,15 +119,6 @@ const char* updatePage =
     "</tr>"
   "</table>";
 
-bool cbWrite(Modbus::ResultCode resultCode, uint16_t transactionId, void* data) {
-  lastResultCode = resultCode;
-  if (resultCode != Modbus::ResultCode::EX_SUCCESS) {
-    Serial.printf_P("Error reading Modbus! Result: 0x%02X, ESP Memory: %d\n", resultCode, ESP.getFreeHeap());
-    return false;
-  }
-  return true;
-}
-
 void setup() {
   //Setup Serial and Modbus
   Serial.begin(115200);
@@ -207,36 +197,44 @@ void setup() {
   Serial.println("Setup done.");
 }
 
-void readMeterData(uint16_t startAt, uint16_t registersToRead, uint16_t* buffer) {
-  mb.readHreg(SLAVE_ID, startAt, buffer, registersToRead, cbWrite);
+Modbus::ResultCode lastResultCode;
+
+uint16_t readMeterData(uint16_t startAt, uint16_t registersToRead, uint16_t* buffer) {
+  lastResultCode = Modbus::ResultCode::EX_DEVICE_FAILED_TO_RESPOND;
+  mb.readHreg(SLAVE_ID, startAt, buffer, registersToRead, [](Modbus::ResultCode resultCode, uint16_t transactionId, void* data) {
+    lastResultCode = resultCode;
+    if (resultCode != Modbus::ResultCode::EX_SUCCESS) {
+     Serial.printf_P("Error reading Modbus! Result: 0x%02X, ESP Memory: %d\n", resultCode, ESP.getFreeHeap());
+    }
+    return true;
+  });
   while (mb.slave()) {  // Check if transaction is active
     mb.task();
     delay(10);
   }
+  while(lastResultCode == Modbus::ResultCode::EX_DEVICE_FAILED_TO_RESPOND) {
+    delay(1);
+  }
+  return lastResultCode;
 }
 
 String toDoubleString(uint16_t bufferPosition, uint16_t* buffer, uint16_t divider = 1, uint16_t decimals = 0) {
-  uint32_t value = ((uint32_t)buffer[bufferPosition + 1]) << 16 | buffer[bufferPosition];
-  double doubleValue = ((double)value) / divider;
+  int32_t value = (((int32_t)buffer[bufferPosition + 1]) << 16) | buffer[bufferPosition];  //MSB->LSB, LSW->MSW
+  double doubleValue = (double) value / divider;
   return String(doubleValue, decimals);
 }
 
 String toFloatString(uint16_t bufferPosition, uint16_t* buffer, uint16_t divider = 1, uint16_t decimals = 0) {
-  float floatValue = ((float)buffer[bufferPosition]) / divider;
+  int16_t value = buffer[bufferPosition];
+  float floatValue = (float) value / divider;
   return String(floatValue, decimals);
 }
 
-double readKWh() {
-  uint16_t res[3];
-  mb.readHreg(SLAVE_ID, 0x400, res, 3, cbWrite);  // Send Read Hreg from Modbus Server
-  while (mb.slave()) {                            // Check if transaction is active
-    mb.task();
-    delay(10);
-  }
-  uint32_t integer = ((uint32_t)res[1]) << 16 | res[0];  //Integer value Value=INT(kWh)*1
-  uint16_t decimal = res[2];                             //Decimal value. Value=DEC(kWh)*1000
-
-  return ((double)integer) + ((double)decimal) / 1000;
+String toThreeDecimalDoubleString(uint16_t bufferPosition, uint16_t* buffer, uint16_t decimals = 3) {
+  int32_t integer = (((int32_t)buffer[bufferPosition + 1]) << 16) | buffer[bufferPosition];    //Integer value Value=INT(kWh)*1
+  int16_t decimal = buffer[bufferPosition + 2];                                                //Decimal value. Value=DEC(kWh)*1000
+  double doubleValue = ((double)integer) + ((double)decimal) / 1000;
+  return String(doubleValue, decimals);
 }
 
 void loop() {
@@ -247,22 +245,29 @@ void loop() {
 
 // Web server related stuff here:
 void meaurement() {
-  uint16_t bodySize = 500;
+  uint16_t bodySize = 700;
   char temp[bodySize];
   int uptime = millis() / 1000;
 
   if (!mb.slave()) {  // Check if no transaction in progress
 
     uint16_t buffer[71];
-    readMeterData(0x00, 35, &buffer[0]);
-    readMeterData(0x22, 36, &buffer[34]);
+    uint16_t result1 = readMeterData(0x00, 35, &buffer[0]);
+    uint16_t result2 = readMeterData(0x22, 36, &buffer[34]);
+    
+    uint16_t bufferkWhTot[3];
+    uint16_t resultkWhTot = readMeterData(0x400, 3, &bufferkWhTot[0]);
 
-    if (lastResultCode == Modbus::ResultCode::EX_SUCCESS) {
+    if (result1 == Modbus::ResultCode::EX_SUCCESS && result2 == Modbus::ResultCode::EX_SUCCESS && resultkWhTot == Modbus::ResultCode::EX_SUCCESS) {
       snprintf(temp, bodySize,
                "{\n\
   \"version\": \"%s\",\n\
   \"uptimeSeconds\": %d,\n\
-  \"lastResultCode\": \"0x%02X\",\n\
+  \"ESPFreeHeap\": %d,\n\
+  \"resultCodes\": [\"0x%02X\", \"0x%02X\", \"0x%02X\"],\n\
+  \"V_L1N\": %s,\n\
+  \"V_L2N\": %s,\n\
+  \"V_L3N\": %s,\n\
   \"V_L1L2\": %s,\n\
   \"V_L2L3\": %s,\n\
   \"V_L3L1\": %s,\n\
@@ -272,8 +277,19 @@ void meaurement() {
   \"W_L1\": %s,\n\
   \"W_L2\": %s,\n\
   \"W_L3\": %s,\n\
+  \"var_L1\": %s,\n\
+  \"var_L2\": %s,\n\
+  \"var_L3\": %s,\n\
   \"W_SYS\": %s,\n\
+  \"VA_SYS\": %s,\n\
+  \"var_SYS\": %s,\n\
+  \"PF_L1\": %s,\n\
+  \"PF_L2\": %s,\n\
+  \"PF_L3\": %s,\n\
+  \"PF_SYS\": %s,\n\
+  \"PS\": %d,\n\
   \"Hz\": %s,\n\
+  \"Kvarh_TOT\": %s,\n\
   \"kWh_L1\": %s,\n\
   \"kWh_L2\": %s,\n\
   \"kWh_L3\": %s,\n\
@@ -281,27 +297,41 @@ void meaurement() {
 }",
                POWAH_VERSION,
                uptime,
-               lastResultCode,
-               toDoubleString(0x06, buffer, 10, 1),    //V_L1-L2
-               toDoubleString(0x08, buffer, 10, 1),    //V_L2-L3
-               toDoubleString(0x0A, buffer, 10, 1),    //V_L3-L1
-               toDoubleString(0x0C, buffer, 1000, 3),  //A_L1
-               toDoubleString(0x0E, buffer, 1000, 3),  //A_L2
-               toDoubleString(0x10, buffer, 1000, 3),  //A_L3
-               toDoubleString(0x12, buffer, 10, 1),    //W_L1
-               toDoubleString(0x14, buffer, 10, 1),    //W_L3
-               toDoubleString(0x16, buffer, 10, 1),    //W_L3
+               ESP.getFreeHeap(),
+               result1, result2, resultkWhTot,
+               toDoubleString(0x00, buffer, 10, 1),    //V L1-N
+               toDoubleString(0x02, buffer, 10, 1),    //V L2-N
+               toDoubleString(0x04, buffer, 10, 1),    //V L3-N
+               toDoubleString(0x06, buffer, 10, 1),    //V L1-L2
+               toDoubleString(0x08, buffer, 10, 1),    //V L2-L3
+               toDoubleString(0x0A, buffer, 10, 1),    //V L3-L1
+               toDoubleString(0x0C, buffer, 1000, 3),  //A L1
+               toDoubleString(0x0E, buffer, 1000, 3),  //A L2
+               toDoubleString(0x10, buffer, 1000, 3),  //A L3
+               toDoubleString(0x12, buffer, 10, 1),    //W L1
+               toDoubleString(0x14, buffer, 10, 1),    //W L3
+               toDoubleString(0x16, buffer, 10, 1),    //W L3
+               toDoubleString(0x1E, buffer, 10, 1),    //var L1
+               toDoubleString(0x20, buffer, 10, 1),    //var L3
+               toDoubleString(0x22, buffer, 10, 1),    //var L3
                toDoubleString(0x28, buffer, 10, 1),    //W sys
+               toDoubleString(0x2A, buffer, 10, 1),    //VA sys
+               toDoubleString(0x2C, buffer, 10, 1),    //var sys
+               toFloatString(0x2E, buffer, 1000, 3),   //PF L1
+               toFloatString(0x2F, buffer, 1000, 3),   //PF L3
+               toFloatString(0x30, buffer, 1000, 3),   //PF L3
+               toFloatString(0x31, buffer, 1000, 3),   //PF sys 
+               buffer[0x32],                           //Phase sequence (PS)
                toFloatString(0x33, buffer, 10, 1),     //Hz
-               toDoubleString(0x40, buffer, 10, 1),    //W_L1
-               toDoubleString(0x42, buffer, 10, 1),    //W_L3
-               toDoubleString(0x44, buffer, 10, 1),    //W_L3
-               String(readKWh(), 3)                    //kWh (+) TOT (3 decimals)
-
+               toDoubleString(0x36, buffer, 10, 1),    //Kvarh (+) TOT
+               toDoubleString(0x40, buffer, 10, 1),    //kWh L1
+               toDoubleString(0x42, buffer, 10, 1),    //kWh L2
+               toDoubleString(0x44, buffer, 10, 1),    //kWh L3
+               toThreeDecimalDoubleString(0x00, bufferkWhTot) //kWh (+) TOT (3 decimals)
       );
       server.send(200, "Application/json", temp);
-    } else if (lastResultCode == Modbus::ResultCode::EX_TIMEOUT) {
-      snprintf(temp, 200,
+    } else if (result1 == Modbus::ResultCode::EX_TIMEOUT) {
+      snprintf(temp, 504,
                "{\n\
   \"version\": \"%s\",\n\
   \"uptimeSeconds\": %d,\n\
