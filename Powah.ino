@@ -10,8 +10,8 @@
 #define MBUS_TXD_PIN 23
 #define SLAVE_ID 1
 #define APP_NAME "Powah!"
-#define POWAH_VERSION "1.07"
-#define WDT_TIMEOUT 3
+#define POWAH_VERSION "1.08"
+#define WDT_TIMEOUT 60  //Watchdog timeout in seconds
 
 ModbusRTU mb;
 WebServer server(80);
@@ -210,6 +210,10 @@ void setup() {
   MDNS.addServiceTxt("powah", "tcp", "version", POWAH_VERSION);
   MDNS.addServiceTxt("powah", "tcp", "endpoint", "/measurement");
 
+  //Start watchdog
+  esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
+  esp_task_wdt_add(NULL); //add current thread to WDT watch
+
   Serial.println("Setup done.");
 }
 
@@ -256,6 +260,7 @@ String toThreeDecimalDoubleString(uint16_t bufferPosition, uint16_t* buffer, uin
 void loop() {
   server.handleClient();
   t.handle();
+  esp_task_wdt_reset(); //Reset watchdog
   delay(2);
 }
 
