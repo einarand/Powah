@@ -5,115 +5,122 @@
 #include <WiFiManager.h>
 #include <Update.h>
 #include <AsyncTimer.h>
+#include <esp_task_wdt.h>
 
 #define MBUS_TXD_PIN 23
 #define SLAVE_ID 1
 #define APP_NAME "Powah!"
 #define POWAH_VERSION "1.07"
+#define WDT_TIMEOUT 3
 
 ModbusRTU mb;
 WebServer server(80);
 AsyncTimer t;
 
 const char* mainPage =
-"<script src='https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js'></script>"
-"<meta name='viewport' content='width=device-width, initial-scale=1'>"
-"<link rel='stylesheet' href='https://www.w3schools.com/w3css/4/w3.css'>"
-"<style>"
-  "body { font-family: \"Courier New\";}"
-  "th, td { padding: 5px;}"
-"</style>"
-"<br><br><br>"
-  "<table width='30%' bgcolor='e6e6e6' align='center'>"
+  "<script src='https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js'></script>"
+  "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+  "<link rel='stylesheet' href='https://www.w3schools.com/w3css/4/w3.css'>"
+  "<style>"
+    "body { font-family: \"Courier New\"; font-size: 5px;}"
+    "th, td { padding: 4px;}"
+  "</style>"
+  "<br><br><br>"
+  "<table width='500px' bgcolor='e6e6e6' align='center'>"
     "<tr>"
-      "<td colspan=2><center><font size=4><b>--={ " APP_NAME " v" POWAH_VERSION " }=--<b/></font></center><br></td>"
+      "<td colspan=3><center><font size=4><b>--={ " APP_NAME " v" POWAH_VERSION " }=--<b/></font></center></td>"
     "</tr>"
+    "<tr><font size=2>"
+      "<td style='text-align:center'><a href='/'><b>home</b></a></td>"
+      "<td style='text-align:center'><a href='/update'>firmware update</a></td>"
+      "<td style='text-align:center'><a href='/measurement'>measurements</a></td></font>"
+    "</tr>"
+    "<tr></tr>"
     "<tr>"
-      "<td colspan=2><font size=2>" APP_NAME " is a modbus controller for the Carlo Gavazzi EM340 meter. It will measure data on demand when calling the <a href='/measurement'>measurement</a> endpoint. EM340 documentation can be found <a href='https://gavazzi.se/app/uploads/2020/11/em330_em340_et330_et340_cp.pdf' target='_blank'>here</a></font></td>"
+      "<td colspan=3><font size=2>" APP_NAME " is a modbus controller for the Carlo Gavazzi EM340 meter. It will measure data on demand when calling the <a href='/measurement'>measurement</a> endpoint. EM340 documentation can be found <a href='https://gavazzi.se/app/uploads/2020/11/em330_em340_et330_et340_cp.pdf' target='_blank'>here</a></font></td>"
     "</tr>"
-    "<tr>"
-      "<td><a href='/update'>Firmware update</a></td>"
-    "</tr>"
-    "<tr>"
-      "<td colspan=2><br><font size=1><center>an EiJoVi product</center></font></td>"
-    "</tr>"
-  "</table>";
+    "<tr></tr>"
+    "<tr><td>Modbus status:</td><td colspan=2><div id='resultCode'>-</div></td></tr>"
+    "<tr><td>Meter type:</td><td colspan=2><div id='meterType'>-</div></td></tr>"
+    "<tr><td colspan=3><br><font size=1><center>an EiJoVi product</center></font></td></tr>"
+  "</table>"
+  "<script>"
+      "fetch('/config').then(function(response) {"
+        "return response.json();"
+      "}).then(function(json) {"
+        "$('#resultCode').html(''+ json.resultCode);"
+        "$('#meterType').html(''+ json.meterName);"
+        "console.log(json);"
+      "});"
+  "</script>";
 
 const char* updatePage =
-"<script src='https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js'></script>"
-"<meta name='viewport' content='width=device-width, initial-scale=1'>"
-"<link rel='stylesheet' href='https://www.w3schools.com/w3css/4/w3.css'>"
-"<style>"
-  "body { font-family: \"Courier New\";}"
-  "th, td { padding: 5px;}"
-"</style>"
-"<br><br><br>"
-"<form method='POST' action='#' enctype='multipart/form-data' id='upload_form'>"
-  "<table width='30%' bgcolor='e6e6e6' align='center'>"
+  "<script src='https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js'></script>"
+  "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+  "<link rel='stylesheet' href='https://www.w3schools.com/w3css/4/w3.css'>"
+  "<style>"
+    "body { font-family: \"Courier New\";}"
+    "th, td { padding: 5px;}"
+  "</style>"
+  "<br><br><br>"
+  "<form method='POST' action='#' enctype='multipart/form-data' id='upload_form'>"
+    "<table width='30%' bgcolor='e6e6e6' align='center'>"
     "<tr>"
       "<td colspan=2><center><font size=4><b>--={ " APP_NAME " v" POWAH_VERSION " }=--<b/><br>Firmware update</font></center><br></td>"
     "</tr>"
     "<tr>"
-      "<td><input type='file' name='update'></td>"
-      "<td><input type='submit' value='Update'><br></td>"
-    "</tr>"
+     "<td><input type='file' name='update'></td>"
+    "<td><input type='submit' value='Update'><br></td>"
+   "</tr>"
     "<tr>"
-    "<td colspan=2>"
-      "<div class='w3-light-grey'>"
-        "<div id='bar' class='w3-container w3-green w3-round' style='height:7px;width:0%'>"
-     "</div>"
-    "</td>"
+      "<td colspan=2><div class='w3-light-grey'><div id='bar' class='w3-container w3-green w3-round' style='height:7px;width:0%'></div></div></td>"
+    "</tr>"
     "<tr>"
       "<td colspan=2><font size=2><center><div id='prg'>update not started</div></center></font></td>"
     "</tr>"
     "<tr>"
       "<td colspan=2><br><font size=1><center>an EiJoVi product</center></font></td>"
     "</tr>"
-"</form>"
- "<script>"
-  "$('form').submit(function(e){"
-    "e.preventDefault();"
-    "var form = $('#upload_form')[0];"
-    "var data = new FormData(form);"
-    " $.ajax({"
-      "url: '/uploadfw',"
-      "type: 'POST',"
-      "data: data,"
-      "contentType: false,"
-      "processData:false,"
-      "xhr: function() {"
-        "var xhr = new window.XMLHttpRequest();"
-        "xhr.upload.addEventListener('progress', function(evt) {"
-          "if (evt.lengthComputable) {"
-            "var bar = document.getElementById('bar');"
-            "var prg = document.getElementById('prg');"
-            "var per = Math.round((evt.loaded / evt.total) * 100);"
-            "bar.style.width = per + '%';"
-            "prg.textContent = per + '%';"
+    "</form>"
+    "<script>"
+      "$('form').submit(function(e){"
+        "e.preventDefault();"
+        "var form = $('#upload_form')[0];"
+        "var data = new FormData(form);"
+        "$.ajax({"
+          "url: '/uploadfw',type: 'POST', data: data, contentType: false, processData:false, xhr: function() {"
+            "var xhr = new window.XMLHttpRequest();"
+            "xhr.upload.addEventListener('progress', function(evt) {"
+              "if (evt.lengthComputable) {"
+                "var bar = document.getElementById('bar');"
+                "var prg = document.getElementById('prg');"
+                "var per = Math.round((evt.loaded / evt.total) * 100);"
+                "bar.style.width = per + '%';"
+                "prg.textContent = per + '%';"
+              "}"
+            "}, false);"
+            "return xhr;"
+          "},"
+          "success:function(d, s) {"
+            "console.log('success!');"
+            "alert('Firmware uploaded successfully!');"
+            "window.location.assign('/updateSuccess');"
+          "},"
+          "error: function (a, b, c) {"
+            "console.log('Update failure!');"
+            "alert('Firmware upload failure! Try again.');"
+            "window.location.assign('/update');"
           "}"
-      "}, false);"
-    "return xhr;"
-  "},"
-    "success:function(d, s) {"
-      "console.log('success!');"
-      "alert('Firmware uploaded successfully!');"
-      "window.location.assign('/updateSuccess');"
-    "},"
-    "error: function (a, b, c) {"
-      "console.log('Update failure!');"
-      "alert('Firmware upload failure! Try again.');"
-      "window.location.assign('/update');"
-    "}"
-  "});"
- "});"
- "</script>";
+        "});"
+      "});"
+    "</script>";
 
- const char* updateSuccessPage =
+const char* updateSuccessPage =
   "<style>"
-  "body { font-family: \"Courier New\";}"
+    "body { font-family: \"Courier New\";}"
   "</style>"
   "<br><br><br>"
-   "<table width='30%' align='center'>"
+  "<table width='30%' align='center'>"
     "<tr>"
       "<td><center><font size=4><b>Firmware successfully updated to v" POWAH_VERSION " </b></font><br><br><font size=2><a href='/'>back home</a></font></center></td>"
     "</tr>"
@@ -150,49 +157,58 @@ void setup() {
   }
 
   //Setup web server
+  server.onNotFound(handleNotFound);
+
   server.on("/", HTTP_GET, []() {
     server.sendHeader("Connection", "close");
     server.send(200, "text/html", mainPage);
   });
+  server.on("/config", configPage);
   server.on("/measurement", meaurement);
-  server.onNotFound(handleNotFound);
   server.on("/update", HTTP_GET, []() {
     server.sendHeader("Connection", "close");
     server.send(200, "text/html", updatePage);
   });
-    server.on("/updateSuccess", HTTP_GET, []() {
+  server.on("/updateSuccess", HTTP_GET, []() {
     server.sendHeader("Connection", "close");
     server.send(200, "text/html", updateSuccessPage);
   });
   /*handling uploading firmware file */
   server.on("/uploadfw", HTTP_POST, []() {
-    server.sendHeader("Connection", "close");
-    server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
-    t.setTimeout([]() {
-      ESP.restart();
-    }, 500);
-  }, []() {
-    HTTPUpload& upload = server.upload();
-    if (upload.status == UPLOAD_FILE_START) {
-      Serial.printf("Update: %s\n", upload.filename.c_str());
-      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { //start with max available size
-        Update.printError(Serial);
+      server.sendHeader("Connection", "close");
+      server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
+      t.setTimeout([]() {
+        ESP.restart();
+      }, 500);
+    },
+    []() {
+      HTTPUpload& upload = server.upload();
+      if (upload.status == UPLOAD_FILE_START) {
+        Serial.printf("Update: %s\n", upload.filename.c_str());
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {  //start with max available size
+          Update.printError(Serial);
+        }
+      } else if (upload.status == UPLOAD_FILE_WRITE) {
+        /* flashing firmware to ESP*/
+        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+          Update.printError(Serial);
+        }
+      } else if (upload.status == UPLOAD_FILE_END) {
+        if (Update.end(true)) {  //true to set the size to the current progress
+          Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
+        } else {
+          Update.printError(Serial);
+        }
       }
-    } else if (upload.status == UPLOAD_FILE_WRITE) {
-      /* flashing firmware to ESP*/
-      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-        Update.printError(Serial);
-      }
-    } else if (upload.status == UPLOAD_FILE_END) {
-      if (Update.end(true)) { //true to set the size to the current progress
-        Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
-      } else {
-        Update.printError(Serial);
-      }
-    }
-  });
+    });
   server.begin();
   Serial.println("HTTP server started");
+  MDNS.addService("powah", "tcp", 80);
+  String name = "" APP_NAME " [" + id + "]";
+  MDNS.addServiceTxt("powah", "tcp", "name", name);
+  MDNS.addServiceTxt("powah", "tcp", "id", id);
+  MDNS.addServiceTxt("powah", "tcp", "version", POWAH_VERSION);
+  MDNS.addServiceTxt("powah", "tcp", "endpoint", "/measurement");
 
   Serial.println("Setup done.");
 }
@@ -204,7 +220,7 @@ uint16_t readMeterData(uint16_t startAt, uint16_t registersToRead, uint16_t* buf
   mb.readHreg(SLAVE_ID, startAt, buffer, registersToRead, [](Modbus::ResultCode resultCode, uint16_t transactionId, void* data) {
     lastResultCode = resultCode;
     if (resultCode != Modbus::ResultCode::EX_SUCCESS) {
-     Serial.printf_P("Error reading Modbus! Result: 0x%02X, ESP Memory: %d\n", resultCode, ESP.getFreeHeap());
+      Serial.printf_P("Error reading Modbus! Result: 0x%02X, ESP Memory: %d\n", resultCode, ESP.getFreeHeap());
     }
     return true;
   });
@@ -212,7 +228,7 @@ uint16_t readMeterData(uint16_t startAt, uint16_t registersToRead, uint16_t* buf
     mb.task();
     delay(10);
   }
-  while(lastResultCode == Modbus::ResultCode::EX_DEVICE_FAILED_TO_RESPOND) {
+  while (lastResultCode == Modbus::ResultCode::EX_DEVICE_FAILED_TO_RESPOND) {
     delay(1);
   }
   return lastResultCode;
@@ -220,19 +236,19 @@ uint16_t readMeterData(uint16_t startAt, uint16_t registersToRead, uint16_t* buf
 
 String toDoubleString(uint16_t bufferPosition, uint16_t* buffer, uint16_t divider = 1, uint16_t decimals = 0) {
   int32_t value = (((int32_t)buffer[bufferPosition + 1]) << 16) | buffer[bufferPosition];  //MSB->LSB, LSW->MSW
-  double doubleValue = (double) value / divider;
+  double doubleValue = (double)value / divider;
   return String(doubleValue, decimals);
 }
 
 String toFloatString(uint16_t bufferPosition, uint16_t* buffer, uint16_t divider = 1, uint16_t decimals = 0) {
   int16_t value = buffer[bufferPosition];
-  float floatValue = (float) value / divider;
+  float floatValue = (float)value / divider;
   return String(floatValue, decimals);
 }
 
 String toThreeDecimalDoubleString(uint16_t bufferPosition, uint16_t* buffer, uint16_t decimals = 3) {
-  int32_t integer = (((int32_t)buffer[bufferPosition + 1]) << 16) | buffer[bufferPosition];    //Integer value Value=INT(kWh)*1
-  int16_t decimal = buffer[bufferPosition + 2];                                                //Decimal value. Value=DEC(kWh)*1000
+  int32_t integer = (((int32_t)buffer[bufferPosition + 1]) << 16) | buffer[bufferPosition];  //Integer value Value=INT(kWh)*1
+  int16_t decimal = buffer[bufferPosition + 2];                                              //Decimal value. Value=DEC(kWh)*1000
   double doubleValue = ((double)integer) + ((double)decimal) / 1000;
   return String(doubleValue, decimals);
 }
@@ -241,6 +257,43 @@ void loop() {
   server.handleClient();
   t.handle();
   delay(2);
+}
+
+const char* configBody = 
+  "{"
+    "\"resultCode\": \"0x%02X\","
+    "\"meterTypeId\": %d,"
+    "\"meterName\": \"%s\""
+  "}";
+
+void configPage() {
+  uint16_t bodySize = 200;
+  char temp[bodySize];
+  uint16_t buffer[1];
+  if (!mb.slave()) {  // Check if no transaction in progress
+    uint16_t result = readMeterData(0x0B, 1, buffer);
+    if (result == Modbus::ResultCode::EX_SUCCESS) {
+      snprintf(
+        temp, bodySize, configBody,
+        result,
+        buffer[0x00],  //0x000b Carlo Gavazzi Controls identification code
+        meterType(buffer[0x00])
+      );
+      server.send(200, "Application/json", temp);
+    } else {
+      snprintf(temp, bodySize, "{\"resultCode\": \"0x%02X\"}", result);
+      server.send(200, "Application/json", temp);
+    }
+  }
+}
+
+char* meterType(uint16_t meterId) {
+  switch(meterId) {
+    case 341:
+      return "EM340-DIN AV2 3 X S1";
+    default:
+      return "Unknown";
+  }
 }
 
 // Web server related stuff here:
@@ -254,7 +307,7 @@ void meaurement() {
     uint16_t buffer[71];
     uint16_t result1 = readMeterData(0x00, 35, &buffer[0]);
     uint16_t result2 = readMeterData(0x22, 36, &buffer[34]);
-    
+
     uint16_t bufferkWhTot[3];
     uint16_t resultkWhTot = readMeterData(0x400, 3, &bufferkWhTot[0]);
 
@@ -265,6 +318,7 @@ void meaurement() {
   \"uptimeSeconds\": %d,\n\
   \"ESPFreeHeap\": %d,\n\
   \"resultCodes\": [\"0x%02X\", \"0x%02X\", \"0x%02X\"],\n\
+  \"meterType\": %d,\n\
   \"V_L1N\": %s,\n\
   \"V_L2N\": %s,\n\
   \"V_L3N\": %s,\n\
@@ -298,36 +352,37 @@ void meaurement() {
                POWAH_VERSION,
                uptime,
                ESP.getFreeHeap(),
-               result1, result2, resultkWhTot,
-               toDoubleString(0x00, buffer, 10, 1),    //V L1-N
-               toDoubleString(0x02, buffer, 10, 1),    //V L2-N
-               toDoubleString(0x04, buffer, 10, 1),    //V L3-N
-               toDoubleString(0x06, buffer, 10, 1),    //V L1-L2
-               toDoubleString(0x08, buffer, 10, 1),    //V L2-L3
-               toDoubleString(0x0A, buffer, 10, 1),    //V L3-L1
-               toDoubleString(0x0C, buffer, 1000, 3),  //A L1
-               toDoubleString(0x0E, buffer, 1000, 3),  //A L2
-               toDoubleString(0x10, buffer, 1000, 3),  //A L3
-               toDoubleString(0x12, buffer, 10, 1),    //W L1
-               toDoubleString(0x14, buffer, 10, 1),    //W L3
-               toDoubleString(0x16, buffer, 10, 1),    //W L3
-               toDoubleString(0x1E, buffer, 10, 1),    //var L1
-               toDoubleString(0x20, buffer, 10, 1),    //var L3
-               toDoubleString(0x22, buffer, 10, 1),    //var L3
-               toDoubleString(0x28, buffer, 10, 1),    //W sys
-               toDoubleString(0x2A, buffer, 10, 1),    //VA sys
-               toDoubleString(0x2C, buffer, 10, 1),    //var sys
-               toFloatString(0x2E, buffer, 1000, 3),   //PF L1
-               toFloatString(0x2F, buffer, 1000, 3),   //PF L3
-               toFloatString(0x30, buffer, 1000, 3),   //PF L3
-               toFloatString(0x31, buffer, 1000, 3),   //PF sys 
-               buffer[0x32],                           //Phase sequence (PS)
-               toFloatString(0x33, buffer, 10, 1),     //Hz
-               toDoubleString(0x36, buffer, 10, 1),    //Kvarh (+) TOT
-               toDoubleString(0x40, buffer, 10, 1),    //kWh L1
-               toDoubleString(0x42, buffer, 10, 1),    //kWh L2
-               toDoubleString(0x44, buffer, 10, 1),    //kWh L3
-               toThreeDecimalDoubleString(0x00, bufferkWhTot) //kWh (+) TOT (3 decimals)
+               result1, result2, resultkWhTot,                 //Modbus result codes
+               buffer[0x0B],                                   //Carlo Gavazzi Controls identification code
+               toDoubleString(0x00, buffer, 10, 1),            //V L1-N
+               toDoubleString(0x02, buffer, 10, 1),            //V L2-N
+               toDoubleString(0x04, buffer, 10, 1),            //V L3-N
+               toDoubleString(0x06, buffer, 10, 1),            //V L1-L2
+               toDoubleString(0x08, buffer, 10, 1),            //V L2-L3
+               toDoubleString(0x0A, buffer, 10, 1),            //V L3-L1
+               toDoubleString(0x0C, buffer, 1000, 3),          //A L1
+               toDoubleString(0x0E, buffer, 1000, 3),          //A L2
+               toDoubleString(0x10, buffer, 1000, 3),          //A L3
+               toDoubleString(0x12, buffer, 10, 1),            //W L1
+               toDoubleString(0x14, buffer, 10, 1),            //W L3
+               toDoubleString(0x16, buffer, 10, 1),            //W L3
+               toDoubleString(0x1E, buffer, 10, 1),            //var L1
+               toDoubleString(0x20, buffer, 10, 1),            //var L3
+               toDoubleString(0x22, buffer, 10, 1),            //var L3
+               toDoubleString(0x28, buffer, 10, 1),            //W sys
+               toDoubleString(0x2A, buffer, 10, 1),            //VA sys
+               toDoubleString(0x2C, buffer, 10, 1),            //var sys
+               toFloatString(0x2E, buffer, 1000, 3),           //PF L1
+               toFloatString(0x2F, buffer, 1000, 3),           //PF L3
+               toFloatString(0x30, buffer, 1000, 3),           //PF L3
+               toFloatString(0x31, buffer, 1000, 3),           //PF sys
+               buffer[0x32],                                   //Phase sequence (PS)
+               toFloatString(0x33, buffer, 10, 1),             //Hz
+               toDoubleString(0x36, buffer, 10, 1),            //Kvarh (+) TOT
+               toDoubleString(0x40, buffer, 10, 1),            //kWh L1
+               toDoubleString(0x42, buffer, 10, 1),            //kWh L2
+               toDoubleString(0x44, buffer, 10, 1),            //kWh L3
+               toThreeDecimalDoubleString(0x00, bufferkWhTot)  //kWh (+) TOT (3 decimals)
       );
       server.send(200, "Application/json", temp);
     } else if (result1 == Modbus::ResultCode::EX_TIMEOUT) {
@@ -371,4 +426,3 @@ void handleNotFound() {
 
   server.send(404, "text/plain", message);
 }
-
