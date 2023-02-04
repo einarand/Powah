@@ -12,8 +12,8 @@
 #define BUTTON_PIN 21
 #define SLAVE_ID 1
 #define APP_NAME "Powah!"
-#define POWAH_VERSION "1.10"
-#define WDT_TIMEOUT 60  //Watchdog timeout in seconds
+#define POWAH_VERSION "1.11"
+#define WDT_TIMEOUT 30  //Watchdog timeout in seconds
 
 ModbusRTU mb;
 WebServer server(80);
