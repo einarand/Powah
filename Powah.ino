@@ -8,50 +8,53 @@
 #include <esp_task_wdt.h>
 
 #define MBUS_TXD_PIN 23
+#define LED_PIN 2
+#define BUTTON_PIN 21
 #define SLAVE_ID 1
 #define APP_NAME "Powah!"
-#define POWAH_VERSION "1.08"
+#define POWAH_VERSION "1.10"
 #define WDT_TIMEOUT 60  //Watchdog timeout in seconds
 
 ModbusRTU mb;
 WebServer server(80);
 AsyncTimer t;
+WiFiManager wm;
 
 const char* mainPage =
   "<script src='https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js'></script>"
   "<meta name='viewport' content='width=device-width, initial-scale=1'>"
   "<link rel='stylesheet' href='https://www.w3schools.com/w3css/4/w3.css'>"
   "<style>"
-    "body { font-family: \"Courier New\"; font-size: 5px;}"
-    "th, td { padding: 4px;}"
+  "body { font-family: \"Courier New\"; font-size: 5px;}"
+  "th, td { padding: 4px;}"
   "</style>"
   "<br><br><br>"
   "<table width='500px' bgcolor='e6e6e6' align='center'>"
-    "<tr>"
-      "<td colspan=3><center><font size=4><b>--={ " APP_NAME " v" POWAH_VERSION " }=--<b/></font></center></td>"
-    "</tr>"
-    "<tr><font size=2>"
-      "<td style='text-align:center'><a href='/'><b>home</b></a></td>"
-      "<td style='text-align:center'><a href='/update'>firmware update</a></td>"
-      "<td style='text-align:center'><a href='/measurement'>measurements</a></td></font>"
-    "</tr>"
-    "<tr></tr>"
-    "<tr>"
-      "<td colspan=3><font size=2>" APP_NAME " is a modbus controller for the Carlo Gavazzi EM340 meter. It will measure data on demand when calling the <a href='/measurement'>measurement</a> endpoint. EM340 documentation can be found <a href='https://gavazzi.se/app/uploads/2020/11/em330_em340_et330_et340_cp.pdf' target='_blank'>here</a></font></td>"
-    "</tr>"
-    "<tr></tr>"
-    "<tr><td>Modbus status:</td><td colspan=2><div id='resultCode'>-</div></td></tr>"
-    "<tr><td>Meter type:</td><td colspan=2><div id='meterType'>-</div></td></tr>"
-    "<tr><td colspan=3><br><font size=1><center>an EiJoVi product</center></font></td></tr>"
+  "<tr>"
+  "<td colspan=3><center><font size=4><b>--={ " APP_NAME " v" POWAH_VERSION " }=--<b/></font></center></td>"
+  "</tr>"
+  "<tr><font size=2>"
+  "<td style='text-align:center'><a href='/'><b>home</b></a></td>"
+  "<td style='text-align:center'><a href='/update'>firmware update</a></td>"
+  "<td style='text-align:center'><a href='/measurement'>measurements</a></td></font>"
+  "</tr>"
+  "<tr></tr>"
+  "<tr>"
+  "<td colspan=3><font size=2>" APP_NAME " is a modbus controller for the Carlo Gavazzi EM340 meter. It will measure data on demand when calling the <a href='/measurement'>measurement</a> endpoint. EM340 documentation can be found <a href='https://gavazzi.se/app/uploads/2020/11/em330_em340_et330_et340_cp.pdf' target='_blank'>here</a></font></td>"
+  "</tr>"
+  "<tr></tr>"
+  "<tr><td>Modbus status:</td><td colspan=2><div id='resultCode'>-</div></td></tr>"
+  "<tr><td>Meter type:</td><td colspan=2><div id='meterType'>-</div></td></tr>"
+  "<tr><td colspan=3><br><font size=1><center>an EiJoVi product</center></font></td></tr>"
   "</table>"
   "<script>"
-      "fetch('/config').then(function(response) {"
-        "return response.json();"
-      "}).then(function(json) {"
-        "$('#resultCode').html(''+ json.resultCode);"
-        "$('#meterType').html(''+ json.meterName);"
-        "console.log(json);"
-      "});"
+  "fetch('/config').then(function(response) {"
+  "return response.json();"
+  "}).then(function(json) {"
+  "$('#resultCode').html(''+ json.resultCode);"
+  "$('#meterType').html(''+ json.meterName);"
+  "console.log(json);"
+  "});"
   "</script>";
 
 const char* updatePage =
@@ -59,74 +62,85 @@ const char* updatePage =
   "<meta name='viewport' content='width=device-width, initial-scale=1'>"
   "<link rel='stylesheet' href='https://www.w3schools.com/w3css/4/w3.css'>"
   "<style>"
-    "body { font-family: \"Courier New\";}"
-    "th, td { padding: 5px;}"
+  "body { font-family: \"Courier New\"; font-size: 5px;}"
+  "th, td { padding: 4px;}"
   "</style>"
   "<br><br><br>"
   "<form method='POST' action='#' enctype='multipart/form-data' id='upload_form'>"
-    "<table width='30%' bgcolor='e6e6e6' align='center'>"
-    "<tr>"
-      "<td colspan=2><center><font size=4><b>--={ " APP_NAME " v" POWAH_VERSION " }=--<b/><br>Firmware update</font></center><br></td>"
-    "</tr>"
-    "<tr>"
-     "<td><input type='file' name='update'></td>"
-    "<td><input type='submit' value='Update'><br></td>"
-   "</tr>"
-    "<tr>"
-      "<td colspan=2><div class='w3-light-grey'><div id='bar' class='w3-container w3-green w3-round' style='height:7px;width:0%'></div></div></td>"
-    "</tr>"
-    "<tr>"
-      "<td colspan=2><font size=2><center><div id='prg'>update not started</div></center></font></td>"
-    "</tr>"
-    "<tr>"
-      "<td colspan=2><br><font size=1><center>an EiJoVi product</center></font></td>"
-    "</tr>"
-    "</form>"
-    "<script>"
-      "$('form').submit(function(e){"
-        "e.preventDefault();"
-        "var form = $('#upload_form')[0];"
-        "var data = new FormData(form);"
-        "$.ajax({"
-          "url: '/uploadfw',type: 'POST', data: data, contentType: false, processData:false, xhr: function() {"
-            "var xhr = new window.XMLHttpRequest();"
-            "xhr.upload.addEventListener('progress', function(evt) {"
-              "if (evt.lengthComputable) {"
-                "var bar = document.getElementById('bar');"
-                "var prg = document.getElementById('prg');"
-                "var per = Math.round((evt.loaded / evt.total) * 100);"
-                "bar.style.width = per + '%';"
-                "prg.textContent = per + '%';"
-              "}"
-            "}, false);"
-            "return xhr;"
-          "},"
-          "success:function(d, s) {"
-            "console.log('success!');"
-            "alert('Firmware uploaded successfully!');"
-            "window.location.assign('/updateSuccess');"
-          "},"
-          "error: function (a, b, c) {"
-            "console.log('Update failure!');"
-            "alert('Firmware upload failure! Try again.');"
-            "window.location.assign('/update');"
-          "}"
-        "});"
-      "});"
-    "</script>";
+  "<table width='500px' bgcolor='e6e6e6' align='center'>"
+  "<tr>"
+  "<td colspan=3><center><font size=4><b>--={ " APP_NAME " v" POWAH_VERSION " }=--<b/></font></center></td>"
+  "</tr>"
+  "<tr><font size=2>"
+  "<td style='text-align:center'><a href='/'>home</a></td>"
+  "<td style='text-align:center'><a href='/update'><b>firmware update</b></a></td>"
+  "<td style='text-align:center'><a href='/measurement'>measurements</a></td></font>"
+  "</tr>"
+  "<tr></tr>"
+  "<td colspan=3><font size=2>Choose Powah.bin-file to upload.</td>"
+  "<tr>"
+  "<td colspan=2><input type='file' name='update'></td>"
+  "<td><input type='submit' value='Update'><br></td>"
+  "</tr>"
+  "<tr>"
+  "<td colspan=3><div class='w3-light-grey'><div id='bar' class='w3-container w3-green w3-round' style='height:7px;width:0%'></div></div></td>"
+  "</tr>"
+  "<tr>"
+  "<td colspan=3><font size=2><center><div id='prg'>update not started</div></center></font></td>"
+  "</tr>"
+  "<tr>"
+  "<td colspan=3><br><font size=1><center>an EiJoVi product</center></font></td>"
+  "</tr>"
+  "</form>"
+  "<script>"
+  "$('form').submit(function(e){"
+  "e.preventDefault();"
+  "var form = $('#upload_form')[0];"
+  "var data = new FormData(form);"
+  "$.ajax({"
+  "url: '/uploadfw',type: 'POST', data: data, contentType: false, processData:false, xhr: function() {"
+  "var xhr = new window.XMLHttpRequest();"
+  "xhr.upload.addEventListener('progress', function(evt) {"
+  "if (evt.lengthComputable) {"
+  "var bar = document.getElementById('bar');"
+  "var prg = document.getElementById('prg');"
+  "var per = Math.round((evt.loaded / evt.total) * 100);"
+  "bar.style.width = per + '%';"
+  "prg.textContent = per + '%';"
+  "}"
+  "}, false);"
+  "return xhr;"
+  "},"
+  "success:function(d, s) {"
+  "console.log('success!');"
+  "alert('Firmware uploaded successfully!');"
+  "window.location.assign('/updateSuccess');"
+  "},"
+  "error: function (a, b, c) {"
+  "console.log('Update failure!');"
+  "alert('Firmware upload failure! Try again.');"
+  "window.location.assign('/update');"
+  "}"
+  "});"
+  "});"
+  "</script>";
 
 const char* updateSuccessPage =
   "<style>"
-    "body { font-family: \"Courier New\";}"
+  "body { font-family: \"Courier New\";}"
   "</style>"
   "<br><br><br>"
   "<table width='30%' align='center'>"
-    "<tr>"
-      "<td><center><font size=4><b>Firmware successfully updated to v" POWAH_VERSION " </b></font><br><br><font size=2><a href='/'>back home</a></font></center></td>"
-    "</tr>"
+  "<tr>"
+  "<td><center><font size=4><b>Firmware successfully updated to v" POWAH_VERSION " </b></font><br><br><font size=2><a href='/'>back home</a></font></center></td>"
+  "</tr>"
   "</table>";
 
 void setup() {
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
   //Setup Serial and Modbus
   Serial.begin(115200);
   Serial2.begin(9600, SERIAL_8N1);
@@ -136,7 +150,6 @@ void setup() {
   Serial.println("\n\n*** Welcome to Powah! ***");
 
   //Setup Wifi
-  WiFiManager wm;
   bool res = wm.autoConnect("Powah!", "password");
   if (!res) {
     Serial.println("Failed to connect");
@@ -174,12 +187,14 @@ void setup() {
     server.send(200, "text/html", updateSuccessPage);
   });
   /*handling uploading firmware file */
-  server.on("/uploadfw", HTTP_POST, []() {
+  server.on(
+    "/uploadfw", HTTP_POST, []() {
       server.sendHeader("Connection", "close");
       server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
       t.setTimeout([]() {
         ESP.restart();
-      }, 500);
+      },
+                   500);
     },
     []() {
       HTTPUpload& upload = server.upload();
@@ -203,6 +218,8 @@ void setup() {
     });
   server.begin();
   Serial.println("HTTP server started");
+
+  //Set up MDNS
   MDNS.addService("powah", "tcp", 80);
   String name = "" APP_NAME " [" + id + "]";
   MDNS.addServiceTxt("powah", "tcp", "name", name);
@@ -211,16 +228,55 @@ void setup() {
   MDNS.addServiceTxt("powah", "tcp", "endpoint", "/measurement");
 
   //Start watchdog
-  esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
-  esp_task_wdt_add(NULL); //add current thread to WDT watch
+  esp_task_wdt_init(WDT_TIMEOUT, true);  //enable panic so ESP32 restarts
+  esp_task_wdt_add(NULL);                //add current thread to WDT watch
 
+  //Setup complete
   Serial.println("Setup done.");
+  digitalWrite(LED_PIN, LOW);
+}
+
+char buttonState = 0;
+char lastButtonState = HIGH;
+bool buttonDown = false;
+unsigned long buttonPressTime = 0;
+const unsigned long BUTTON_TIME_FOR_FACTORY_RESET = 5000;
+
+void loop() {
+  server.handleClient();
+  t.handle();
+  esp_task_wdt_reset();  //Reset watchdog
+
+  //Button logic
+  buttonState = digitalRead(BUTTON_PIN);
+  if (buttonState != lastButtonState) {
+    if (buttonState == LOW) {
+      buttonPressTime = millis();
+      buttonDown = true;
+      Serial.println("Button pressed");
+    } else {
+      // the button just got released
+      buttonDown = false;
+    }
+    // Delay a little bit to avoid bouncing
+    delay(50);
+  }
+  lastButtonState = buttonState;
+  if (buttonDown == true && millis() - buttonPressTime >= BUTTON_TIME_FOR_FACTORY_RESET) {
+    buttonDown = false;
+    Serial.println("Factory reset!");
+    digitalWrite(LED_PIN, HIGH);
+    wm.resetSettings();
+    ESP.restart();
+  }
+  delay(2);
 }
 
 Modbus::ResultCode lastResultCode;
 
 uint16_t readMeterData(uint16_t startAt, uint16_t registersToRead, uint16_t* buffer) {
-  lastResultCode = Modbus::ResultCode::EX_DEVICE_FAILED_TO_RESPOND;
+  lastResultCode = Modbus::ResultCode::EX_DEVICE_FAILED_TO_RESPOND;  //Using this to wait for data
+  digitalWrite(LED_PIN, HIGH);
   mb.readHreg(SLAVE_ID, startAt, buffer, registersToRead, [](Modbus::ResultCode resultCode, uint16_t transactionId, void* data) {
     lastResultCode = resultCode;
     if (resultCode != Modbus::ResultCode::EX_SUCCESS) {
@@ -235,6 +291,7 @@ uint16_t readMeterData(uint16_t startAt, uint16_t registersToRead, uint16_t* buf
   while (lastResultCode == Modbus::ResultCode::EX_DEVICE_FAILED_TO_RESPOND) {
     delay(1);
   }
+  digitalWrite(LED_PIN, LOW);
   return lastResultCode;
 }
 
@@ -257,18 +314,11 @@ String toThreeDecimalDoubleString(uint16_t bufferPosition, uint16_t* buffer, uin
   return String(doubleValue, decimals);
 }
 
-void loop() {
-  server.handleClient();
-  t.handle();
-  esp_task_wdt_reset(); //Reset watchdog
-  delay(2);
-}
-
-const char* configBody = 
+const char* configBody =
   "{"
-    "\"resultCode\": \"0x%02X\","
-    "\"meterTypeId\": %d,"
-    "\"meterName\": \"%s\""
+  "\"resultCode\": \"0x%02X\","
+  "\"meterTypeId\": %d,"
+  "\"meterName\": \"%s\""
   "}";
 
 void configPage() {
@@ -282,8 +332,7 @@ void configPage() {
         temp, bodySize, configBody,
         result,
         buffer[0x00],  //0x000b Carlo Gavazzi Controls identification code
-        meterType(buffer[0x00])
-      );
+        meterType(buffer[0x00]));
       server.send(200, "Application/json", temp);
     } else {
       snprintf(temp, bodySize, "{\"resultCode\": \"0x%02X\"}", result);
@@ -293,7 +342,7 @@ void configPage() {
 }
 
 char* meterType(uint16_t meterId) {
-  switch(meterId) {
+  switch (meterId) {
     case 341:
       return "EM340-DIN AV2 3 X S1";
     default:
@@ -322,6 +371,7 @@ void meaurement() {
   \"version\": \"%s\",\n\
   \"uptimeSeconds\": %d,\n\
   \"ESPFreeHeap\": %d,\n\
+  \"buttonState\": %d,\n\
   \"resultCodes\": [\"0x%02X\", \"0x%02X\", \"0x%02X\"],\n\
   \"meterType\": %d,\n\
   \"V_L1N\": %s,\n\
@@ -357,6 +407,7 @@ void meaurement() {
                POWAH_VERSION,
                uptime,
                ESP.getFreeHeap(),
+               digitalRead(BUTTON_PIN),
                result1, result2, resultkWhTot,                 //Modbus result codes
                buffer[0x0B],                                   //Carlo Gavazzi Controls identification code
                toDoubleString(0x00, buffer, 10, 1),            //V L1-N
@@ -390,25 +441,22 @@ void meaurement() {
                toThreeDecimalDoubleString(0x00, bufferkWhTot)  //kWh (+) TOT (3 decimals)
       );
       server.send(200, "Application/json", temp);
-    } else if (result1 == Modbus::ResultCode::EX_TIMEOUT) {
+    } else {  //Error
+      String error = "unknown";
+      if (result1 == Modbus::ResultCode::EX_TIMEOUT || result2 == Modbus::ResultCode::EX_TIMEOUT || resultkWhTot == Modbus::ResultCode::EX_TIMEOUT) {
+        error = "timeout";
+      } else if (result1 == Modbus::ResultCode::EX_DATA_MISMACH || result2 == Modbus::ResultCode::EX_DATA_MISMACH || resultkWhTot == Modbus::ResultCode::EX_DATA_MISMACH) {
+        error = "dataMismatch";
+      }
       snprintf(temp, 504,
                "{\n\
   \"version\": \"%s\",\n\
   \"uptimeSeconds\": %d,\n\
-  \"lastResultCode\": \"0x%02X\",\n\
-  \"error\": \"timeout\"\n\
+  \"resultCodes\": [\"0x%02X\", \"0x%02X\", \"0x%02X\"],\n\
+  \"error\": \"%s\"\n\
 }",
-               POWAH_VERSION, uptime, lastResultCode);
-      server.send(504, "Application/json", temp);
-    } else {
-      snprintf(temp, 200,
-               "{\n\
-  \"uptimeSeconds\": %d,\n\
-  \"lastResultCode\": \"0x%02X\",\n\
-  \"error\": \"unknown\"\n\
-}",
-               uptime, lastResultCode);
-      server.send(500, "Application/json", temp);
+               POWAH_VERSION, uptime, result1, result2, resultkWhTot, error);
+      server.send(200, "Application/json", temp);
     }
   } else {
     server.send(500, "Application/json", "Internal Server error");
